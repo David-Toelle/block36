@@ -1,8 +1,12 @@
 const pg = require('pg');
-const client = new pg.Client(process.env.DATABASE_URL || 'postgres://localhost/acme_auth_store_db');
+const client = new pg.Client(
+  process.env.DATABASE_URL ||
+    "postgres://postgres:123@localhost:5432/acme_auth_store_db"
+);
 const uuid = require('uuid');
 const bcrypt = require('bcrypt');
-
+const jwt = require("jsonwebtoken");
+const JWT_SECRET = process.env.JWT_SECRET || "shhh";
 const createTables = async()=> {
   const SQL = `
     DROP TABLE IF EXISTS favorites;
@@ -58,28 +62,61 @@ const destroyFavorite = async({ user_id, id })=> {
   await client.query(SQL, [user_id, id]);
 };
 
-const authenticate = async({ username, password })=> {
+const authenticate = async ({ username, password }) => {
   const SQL = `
-    SELECT id, username FROM users WHERE username=$1;
+    SELECT id, password
+    FROM users
+    WHERE username = $1
   `;
   const response = await client.query(SQL, [username]);
-  if(!response.rows.length){
-    const error = Error('not authorized');
+
+  if (!response.rows.length) {
+    const error = new Error("User not found");
     error.status = 401;
     throw error;
   }
-  return { token: response.rows[0].id };
+
+  const storedHash = response.rows[0].password;
+
+  try {
+    const match = await bcrypt.compare(password, storedHash);
+    if (!match) {
+      throw new Error("Invalid password");
+    }
+    
+    const token = await jwt.sign({ id: response.rows[0].id }, JWT_SECRET);
+    return { token };
+  } catch (error) {
+    throw new Error("Authentication failed");
+  }
 };
 
-const findUserWithToken = async(id)=> {
+
+const findUserByToken = async (token) => {
+  console.log(token)
+  let id;
+  try {
+    // Ensure token does not include "Bearer " prefix
+    const tokenWithoutBearer = token.replace("Bearer ", "");
+
+    // Verify token with JWT secret
+    const payload = await jwt.verify(tokenWithoutBearer, JWT_SECRET);
+    console.log("Decoded payload:", payload);
+    id = payload.id;
+  } catch (ex) {
+    // Log detailed error information
+    console.error("Error verifying token:", ex);
+    throw new Error("Unauthorized");
+  }
+
   const SQL = `
-    SELECT id, username FROM users WHERE id=$1;
+    SELECT id, username
+    FROM users
+    WHERE id = $1
   `;
   const response = await client.query(SQL, [id]);
-  if(!response.rows.length){
-    const error = Error('not authorized');
-    error.status = 401;
-    throw error;
+  if (!response.rows.length) {
+    throw new Error("User not found");
   }
   return response.rows[0];
 };
@@ -119,5 +156,5 @@ module.exports = {
   createFavorite,
   destroyFavorite,
   authenticate,
-  findUserWithToken
+  findUserByToken
 };
